@@ -20,6 +20,8 @@ export function getAuth(): Auth {
 }
 
 export function initAuth() {
+  const googleEnabled = Boolean(env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET);
+
   const auth = betterAuth({
     secret: env.BETTER_AUTH_SECRET,
     baseURL: env.BETTER_AUTH_URL,
@@ -49,16 +51,18 @@ export function initAuth() {
     },
 
     // ── Social Providers ──────────────────────────────────────────────────
-    socialProviders: {
-      google: {
-        clientId: env.GOOGLE_CLIENT_ID,
-        clientSecret: env.GOOGLE_CLIENT_SECRET,
-      },
-    },
+    socialProviders: googleEnabled
+      ? {
+          google: {
+            clientId: env.GOOGLE_CLIENT_ID,
+            clientSecret: env.GOOGLE_CLIENT_SECRET,
+          },
+        }
+      : undefined,
 
-    plugins: [
-      oneTap(), // handles Google One Tap credential (JWT) verification
-    ],
+    plugins: googleEnabled
+      ? [oneTap()] // handles Google One Tap credential (JWT) verification
+      : [],
 
     session: {
       expiresIn: 60 * 60 * 24 * 7,  // 7 days

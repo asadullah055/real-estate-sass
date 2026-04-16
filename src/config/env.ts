@@ -11,20 +11,20 @@ const envSchema = z.object({
     .string()
     .min(32, "BETTER_AUTH_SECRET must be at least 32 characters"),
   BETTER_AUTH_URL: z.string().url().default("http://localhost:5000"),
-  GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
-  GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required"),
+  GOOGLE_CLIENT_ID: z.string().default(""),
+  GOOGLE_CLIENT_SECRET: z.string().default(""),
   FRONTEND_URL: z.string().url().default("http://localhost:3000"),
 
   // Stripe
-  STRIPE_SECRET_KEY: z.string().min(1, "STRIPE_SECRET_KEY is required"),
-  STRIPE_WEBHOOK_SECRET: z.string().min(1, "STRIPE_WEBHOOK_SECRET is required"),
-  STRIPE_PRO_PRICE_ID: z.string().min(1, "STRIPE_PRO_PRICE_ID is required"),
+  STRIPE_SECRET_KEY: z.string().default(""),
+  STRIPE_WEBHOOK_SECRET: z.string().default(""),
+  STRIPE_PRO_PRICE_ID: z.string().default(""),
 
   // SMTP (Nodemailer)
-  SMTP_HOST: z.string().min(1, "SMTP_HOST is required"),
+  SMTP_HOST: z.string().default(""),
   SMTP_PORT: z.string().default("587"),
-  SMTP_USER: z.string().min(1, "SMTP_USER is required"),
-  SMTP_PASS: z.string().min(1, "SMTP_PASS is required"),
+  SMTP_USER: z.string().default(""),
+  SMTP_PASS: z.string().default(""),
   SMTP_FROM: z.string().default("NebulaNexus <no-reply@nebulanexus.io>"),
 
   // Retell AI
