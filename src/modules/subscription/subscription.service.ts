@@ -7,7 +7,7 @@ import { AppError } from '../../common/errors/AppError.js';
 import { logger } from '../../config/logger.js';
 import type { ISubscription } from './subscription.model.js';
 
-type StripeClient = Stripe;
+type StripeClient = any;
 type StripePaymentMethod = Awaited<ReturnType<StripeClient['paymentMethods']['retrieve']>>;
 type StripeInvoiceList = Awaited<ReturnType<StripeClient['invoices']['list']>>;
 type StripeWebhookEvent = ReturnType<StripeClient['webhooks']['constructEvent']>;
@@ -33,17 +33,24 @@ type StripeCheckoutSessionLike = {
 };
 
 function getStripe(): StripeClient {
-  return new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2025-03-31.basil' });
+  const stripeFactory = Stripe as unknown as (
+    key: string,
+    config?: Record<string, unknown>,
+  ) => StripeClient;
+  return stripeFactory(env.STRIPE_SECRET_KEY, { apiVersion: '2025-03-31.basil' });
 }
 
 function throwStripeAppError(error: unknown): never {
-  if (error instanceof Stripe.errors.StripeError) {
-    throw new AppError(error.message, 400);
+  if (typeof error === 'object' && error !== null) {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message.trim()) {
+      throw new AppError(message, 400);
+    }
   }
   if (error instanceof Error) {
     throw new AppError(error.message, 502);
   }
-  throw error;
+  throw new AppError('Stripe request failed', 502);
 }
 
 async function runStripe(action: () => Promise<any>): Promise<any> {
