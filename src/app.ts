@@ -25,6 +25,7 @@ import { logger } from "./config/logger.js";
 
 export function createApp(auth: Auth): Application {
   const app = express();
+  app.set("trust proxy", 1);
 
   app.use(
     cors({
