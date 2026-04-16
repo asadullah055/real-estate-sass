@@ -57,7 +57,11 @@ export function createApp(auth: Auth): Application {
   app.use(express.json());
   app.use(generalRateLimiter);
 
-  // ── Health check ────────────────────────────────────────────────────────────
+  // ── Health / root ───────────────────────────────────────────────────────────
+  app.get("/", (_req, res) => {
+    res.json({ status: "ok", name: "SAAS API", timestamp: new Date().toISOString() });
+  });
+
   app.get("/health", (_req, res) => {
     res.json({ status: "ok", timestamp: new Date().toISOString() });
   });
@@ -98,6 +102,11 @@ export function createApp(auth: Auth): Application {
 
   // /api/settings (workspace Retell + n8n config)
   app.use("/api/settings", settingsRouter);
+
+  // ── 404 for unmatched routes ─────────────────────────────────────────────────
+  app.use((_req, res) => {
+    res.status(404).json({ success: false, message: "Route not found" });
+  });
 
   // ── Global error handler (must be last) ────────────────────────────────────
   app.use(errorMiddleware);
