@@ -1,9 +1,9 @@
 import { toNodeHandler } from "better-auth/node";
 import cors from "cors";
-import express, { Application } from "express";
+import express, { Application, type Request, type Response } from "express";
 import type { Auth } from "./config/auth.js";
 import { env } from "./config/env.js";
-import { initAuth } from "./config/auth.js";
+import { initAuth, getAuth } from "./config/auth.js";
 import { connectDB } from "./infra/database/connection.js";
 import { errorMiddleware } from "./common/middleware/error.middleware.js";
 import { generalRateLimiter } from "./common/middleware/rateLimiter.middleware.js";
@@ -33,6 +33,47 @@ export function createApp(auth: Auth): Application {
       credentials: true, // required for Better Auth session cookies
     }),
   );
+
+  /**
+   * Google OAuth relay — browser navigates here directly (GET), so the
+   * state cookie is set on this domain (Vercel) with no cross-domain issues.
+   * Internally calls Better Auth's POST /sign-in/social handler.
+   */
+  app.get("/api/google-auth", async (req: Request, res: Response) => {
+    try {
+      const callbackURL =
+        (req.query.callbackURL as string) || `${env.FRONTEND_URL}/dashboard`;
+
+      const internalReq = new Request(
+        `${env.BETTER_AUTH_URL}/api/auth/sign-in/social`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: env.FRONTEND_URL },
+          body: JSON.stringify({ provider: "google", callbackURL }),
+        },
+      );
+
+      const authRes = await getAuth().handler(internalReq);
+
+      // Forward all Set-Cookie headers so the state cookie lands on this domain
+      const rawCookies: string[] = [];
+      authRes.headers.forEach((val, key) => {
+        if (key.toLowerCase() === "set-cookie") rawCookies.push(val);
+      });
+      if (rawCookies.length) res.setHeader("Set-Cookie", rawCookies);
+
+      const location = authRes.headers.get("location");
+      if (location) { res.redirect(location); return; }
+
+      const body = await authRes.json().catch(() => ({})) as { url?: string };
+      if (body.url) { res.redirect(body.url); return; }
+
+      res.status(500).json({ error: "Could not start OAuth flow" });
+    } catch (err) {
+      logger.error("[google-auth] relay failed", { message: (err as Error).message });
+      res.status(500).json({ error: "OAuth relay error" });
+    }
+  });
 
   /**
    * Better Auth handler — must be mounted BEFORE express.json().
