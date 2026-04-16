@@ -7,7 +7,32 @@ import { AppError } from '../../common/errors/AppError.js';
 import { logger } from '../../config/logger.js';
 import type { ISubscription } from './subscription.model.js';
 
-function getStripe(): Stripe {
+type StripeClient = Stripe;
+type StripePaymentMethod = Awaited<ReturnType<StripeClient['paymentMethods']['retrieve']>>;
+type StripeInvoiceList = Awaited<ReturnType<StripeClient['invoices']['list']>>;
+type StripeWebhookEvent = ReturnType<StripeClient['webhooks']['constructEvent']>;
+type StripeSubscriptionLike = {
+  id: string;
+  status: string;
+  cancel_at_period_end: boolean;
+  customer?: string | { id?: string } | null;
+  items?: { data?: Array<{ current_period_end?: number }> };
+  current_period_end?: number;
+};
+type StripeInvoiceLike = {
+  customer?: string | { id?: string } | null;
+  subscription?: string | { id?: string } | null;
+  parent?: { subscription_details?: { subscription?: string | null } | null } | null;
+};
+type StripeCheckoutSessionLike = {
+  id: string;
+  mode?: string | null;
+  subscription?: string | { id?: string } | null;
+  metadata?: Record<string, string> | null;
+  customer?: string | { id?: string } | null;
+};
+
+function getStripe(): StripeClient {
   return new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: '2025-03-31.basil' });
 }
 
@@ -21,7 +46,7 @@ function throwStripeAppError(error: unknown): never {
   throw error;
 }
 
-async function runStripe<T>(action: () => Promise<T>): Promise<T> {
+async function runStripe(action: () => Promise<any>): Promise<any> {
   try {
     return await action();
   } catch (error) {
@@ -34,7 +59,7 @@ async function runStripe<T>(action: () => Promise<T>): Promise<T> {
  * 1) Stripe Price ID (price_...) - preferred
  * 2) Stripe Product ID (prod_...) - resolves to a recurring price
  */
-async function resolveProPriceId(stripe: Stripe): Promise<string> {
+async function resolveProPriceId(stripe: StripeClient): Promise<string> {
   const configured = env.STRIPE_PRO_PRICE_ID.trim();
 
   if (configured.startsWith('price_')) {
@@ -89,7 +114,7 @@ function toValidDateFromUnixSeconds(value: unknown): Date | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date;
 }
 
-function getStripeSubscriptionPeriodEnd(sub: Stripe.Subscription): number | undefined {
+function getStripeSubscriptionPeriodEnd(sub: StripeSubscriptionLike): number | undefined {
   const itemPeriodEnd = sub.items?.data?.find((item) => typeof item.current_period_end === 'number')?.current_period_end;
   if (typeof itemPeriodEnd === 'number') return itemPeriodEnd;
 
@@ -99,7 +124,7 @@ function getStripeSubscriptionPeriodEnd(sub: Stripe.Subscription): number | unde
   return undefined;
 }
 
-function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
+function getInvoiceSubscriptionId(invoice: StripeInvoiceLike): string | null {
   const legacy = (invoice as unknown as { subscription?: string | { id?: string } | null }).subscription;
   if (typeof legacy === 'string') return legacy;
   if (legacy && typeof legacy === 'object' && typeof legacy.id === 'string') return legacy.id;
@@ -112,7 +137,7 @@ function getInvoiceSubscriptionId(invoice: Stripe.Invoice): string | null {
 }
 
 async function resolveSubscriptionIdByCustomer(
-  stripe: Stripe,
+  stripe: StripeClient,
   stripeCustomerId: string,
 ): Promise<string | null> {
   const stripeSubs = await runStripe(() =>
@@ -126,9 +151,9 @@ async function resolveSubscriptionIdByCustomer(
   if (!stripeSubs.data.length) return null;
 
   const preferred =
-    stripeSubs.data.find((s) => s.status === 'active')
-    ?? stripeSubs.data.find((s) => s.status === 'trialing')
-    ?? stripeSubs.data.find((s) => s.status === 'past_due')
+    stripeSubs.data.find((s: StripeSubscriptionLike) => s.status === 'active')
+    ?? stripeSubs.data.find((s: StripeSubscriptionLike) => s.status === 'trialing')
+    ?? stripeSubs.data.find((s: StripeSubscriptionLike) => s.status === 'past_due')
     ?? stripeSubs.data[0];
 
   return preferred?.id ?? null;
@@ -165,15 +190,13 @@ async function getBillingSnapshot(sub: ISubscription): Promise<{
 
     const billingEmail = customer.email ?? null;
 
-    let paymentMethod: Stripe.PaymentMethod | null = null;
+    let paymentMethod: StripePaymentMethod | null = null;
     const defaultPaymentMethod = customer.invoice_settings?.default_payment_method;
     if (defaultPaymentMethod) {
       if (typeof defaultPaymentMethod === 'string') {
-        paymentMethod = await runStripe(() =>
-          stripe.paymentMethods.retrieve(defaultPaymentMethod),
-        );
+        paymentMethod = await runStripe(() => stripe.paymentMethods.retrieve(defaultPaymentMethod));
       } else {
-        paymentMethod = defaultPaymentMethod as Stripe.PaymentMethod;
+        paymentMethod = defaultPaymentMethod as StripePaymentMethod;
       }
     }
 
@@ -229,9 +252,9 @@ async function reconcileFromStripeIfNeeded(sub: ISubscription): Promise<ISubscri
   if (!stripeSubs.data.length) return sub;
 
   const preferred =
-    stripeSubs.data.find((s) => s.status === 'active')
-    ?? stripeSubs.data.find((s) => s.status === 'trialing')
-    ?? stripeSubs.data.find((s) => s.status === 'past_due')
+    stripeSubs.data.find((s: StripeSubscriptionLike) => s.status === 'active')
+    ?? stripeSubs.data.find((s: StripeSubscriptionLike) => s.status === 'trialing')
+    ?? stripeSubs.data.find((s: StripeSubscriptionLike) => s.status === 'past_due')
     ?? stripeSubs.data[0];
 
   const nextStatus = mapStripeStatus(preferred.status);
@@ -389,7 +412,7 @@ export const SubscriptionService = {
       stripe.subscriptions.update(stripeSubscriptionId, {
         cancel_at_period_end: true,
       }),
-    );
+    ) as StripeSubscriptionLike;
 
     const currentPeriodEnd = toValidDateFromUnixSeconds(getStripeSubscriptionPeriodEnd(stripeSub));
     const updated = await SubscriptionRepository.updateByUserId(userId, {
@@ -425,7 +448,7 @@ export const SubscriptionService = {
       stripe.subscriptions.update(stripeSubscriptionId, {
         cancel_at_period_end: false,
       }),
-    );
+    ) as StripeSubscriptionLike;
 
     const currentPeriodEnd = toValidDateFromUnixSeconds(getStripeSubscriptionPeriodEnd(stripeSub));
     const updated = await SubscriptionRepository.updateByUserId(userId, {
@@ -453,9 +476,9 @@ export const SubscriptionService = {
         customer: sub.stripeCustomerId,
         limit: 24,
       }),
-    );
+    ) as StripeInvoiceList;
 
-    return invoices.data.map((inv) => ({
+    return invoices.data.map((inv: StripeInvoiceList['data'][number]) => ({
       id: inv.id,
       amount: inv.amount_paid,
       currency: inv.currency,
@@ -469,7 +492,7 @@ export const SubscriptionService = {
   /** Handle incoming Stripe webhook event. */
   async handleWebhook(payload: Buffer, signature: string): Promise<void> {
     const stripe = getStripe();
-    let event: Stripe.Event;
+    let event: StripeWebhookEvent;
 
     try {
       event = stripe.webhooks.constructEvent(payload, signature, env.STRIPE_WEBHOOK_SECRET);
@@ -479,13 +502,14 @@ export const SubscriptionService = {
 
     switch (event.type) {
       case 'checkout.session.completed': {
-        const session = event.data.object as Stripe.Checkout.Session;
+        const session = event.data.object as StripeCheckoutSessionLike;
         if (session.mode !== 'subscription' || !session.subscription) break;
         const stripeSubId = typeof session.subscription === 'string'
           ? session.subscription
           : session.subscription.id;
+        if (!stripeSubId) break;
 
-        const stripeSub = await runStripe(() => stripe.subscriptions.retrieve(stripeSubId));
+        const stripeSub = await runStripe(() => stripe.subscriptions.retrieve(stripeSubId)) as StripeSubscriptionLike;
 
         let targetUserId = session.metadata?.userId ?? null;
         if (!targetUserId && typeof session.customer === 'string') {
@@ -513,7 +537,7 @@ export const SubscriptionService = {
 
       case 'customer.subscription.created':
       case 'customer.subscription.updated': {
-        const stripeSub = event.data.object as Stripe.Subscription;
+        const stripeSub = event.data.object as StripeSubscriptionLike;
         const currentPeriodEnd = toValidDateFromUnixSeconds(getStripeSubscriptionPeriodEnd(stripeSub));
         const updates = {
           stripeSubscriptionId: stripeSub.id,
@@ -545,7 +569,7 @@ export const SubscriptionService = {
       }
 
       case 'customer.subscription.deleted': {
-        const stripeSub = event.data.object as Stripe.Subscription;
+        const stripeSub = event.data.object as StripeSubscriptionLike;
         const updates = {
           stripeSubscriptionId: stripeSub.id,
           status: 'canceled',
@@ -567,7 +591,7 @@ export const SubscriptionService = {
       }
 
       case 'invoice.payment_failed': {
-        const invoice = event.data.object as Stripe.Invoice;
+        const invoice = event.data.object as StripeInvoiceLike;
         const subId = getInvoiceSubscriptionId(invoice);
         if (!subId) break;
         const bySubId = await SubscriptionRepository.updateByStripeSubscriptionId(subId, {
@@ -643,7 +667,7 @@ export const SubscriptionService = {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function mapStripeStatus(
-  stripeStatus: Stripe.Subscription.Status,
+  stripeStatus: string,
 ): 'trialing' | 'active' | 'past_due' | 'canceled' | 'incomplete' {
   switch (stripeStatus) {
     case 'trialing':   return 'trialing';
