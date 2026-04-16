@@ -3,6 +3,8 @@ import cors from "cors";
 import express, { Application } from "express";
 import type { Auth } from "./config/auth.js";
 import { env } from "./config/env.js";
+import { initAuth } from "./config/auth.js";
+import { connectDB } from "./infra/database/connection.js";
 import { errorMiddleware } from "./common/middleware/error.middleware.js";
 import { generalRateLimiter } from "./common/middleware/rateLimiter.middleware.js";
 import { authApiRouter } from "./modules/auth/auth.routes.js";
@@ -19,6 +21,7 @@ import { analyticsRouter } from "./modules/analytics/analytics.routes.js";
 import { n8nRouter } from "./modules/n8n/n8n.routes.js";
 import { webhooksRouter } from "./modules/webhook/webhook.routes.js";
 import { settingsRouter } from "./modules/tenant/tenant.routes.js";
+import { logger } from "./config/logger.js";
 
 export function createApp(auth: Auth): Application {
   const app = express();
@@ -99,4 +102,48 @@ export function createApp(auth: Auth): Application {
   app.use(errorMiddleware);
 
   return app;
+}
+
+let cachedApp: Application | null = null;
+let appInitPromise: Promise<Application> | null = null;
+
+async function getOrInitServerlessApp(): Promise<Application> {
+  if (cachedApp) return cachedApp;
+  if (!appInitPromise) {
+    appInitPromise = (async () => {
+      await connectDB();
+      const auth = initAuth();
+      const app = createApp(auth);
+      cachedApp = app;
+      return app;
+    })();
+  }
+  return appInitPromise;
+}
+
+export default async function handler(req: unknown, res: unknown) {
+  try {
+    const app = await getOrInitServerlessApp();
+    return (app as unknown as (request: unknown, response: unknown) => unknown)(req, res);
+  } catch (error) {
+    logger.error("Serverless app bootstrap failed", error);
+    if (
+      res
+      && typeof res === "object"
+      && "statusCode" in res
+      && "setHeader" in res
+      && "end" in res
+    ) {
+      const response = res as {
+        statusCode: number;
+        setHeader: (name: string, value: string) => void;
+        end: (body: string) => void;
+      };
+      response.statusCode = 500;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ success: false, message: "Server bootstrap failed" }));
+      return;
+    }
+    throw error;
+  }
 }
